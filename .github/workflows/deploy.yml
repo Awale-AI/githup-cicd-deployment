@@ -8,9 +8,9 @@ on:
   workflow_dispatch:
 
 env:
-  APP_NAME: awale-portfolio           # Changed to your app name
-  DEPLOY_PATH: /var/www/ci-cd         # Changed to your path
-  NODE_VERSION: "18"                   # Adjust as needed
+  APP_NAME: awale-portfolio
+  DEPLOY_PATH: /var/www/ci-cd
+  NODE_VERSION: "18"
 
 jobs:
   test:
@@ -27,10 +27,7 @@ jobs:
       
       - name: Install dependencies
         run: npm ci
-      
-
-        run: npm run dev
-
+        
   deploy:
     needs: test
     runs-on: ubuntu-latest
@@ -43,7 +40,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ubuntu              # Changed to ubuntu (your user)
+          username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
             # Setup directory
@@ -51,7 +48,7 @@ jobs:
             sudo chown -R ubuntu:ubuntu ${{ env.DEPLOY_PATH }}
             cd ${{ env.DEPLOY_PATH }}
             
-            # Pull latest code
+            # Pull latest code (clone if doesn't exist, pull if it does)
             if [ -d ".git" ]; then
               echo "Repository exists, pulling latest changes..."
               git pull origin main
@@ -60,18 +57,18 @@ jobs:
               git clone https://github.com/${{ github.repository }}.git .
             fi
             
-            # Install dependencies
+            # Install dependencies (production only)
             echo "Installing dependencies..."
             npm install --omit=dev
             
-            # Stop existing app
+            # Stop existing app (gracefully handle if not running)
             echo "Managing PM2 process..."
             pm2 stop ${{ env.APP_NAME }} 2>/dev/null || echo "App not running, starting fresh"
             pm2 delete ${{ env.APP_NAME }} 2>/dev/null || echo "No existing app to delete"
             
             # Start app
             echo "Starting application..."
-            pm2 start app.js --name ${{ env.APP_NAME }}   # Make sure this is your entry file
+            pm2 start app.js --name ${{ env.APP_NAME }}
             pm2 save
             
             # Verify app is running
@@ -79,9 +76,9 @@ jobs:
             pm2 status
             sleep 5
             
-            # Health check - update port if needed
+            # Health check
             echo "Running health check..."
-            if curl -f http://localhost:8080 > /dev/null 2>&1; then  # Changed to port 8080
+            if curl -f http://localhost:8080 > /dev/null 2>&1; then
               echo "✅ Health check passed!"
             else
               echo "⚠️ Health check warning - endpoint not responding"
@@ -94,4 +91,4 @@ jobs:
           echo "🚀 Application deployed successfully to EC2"
           echo "📦 App Name: ${{ env.APP_NAME }}"
           echo "📍 Location: ${{ env.DEPLOY_PATH }}"
-          echo "🔗 URL: http://${{ secrets.EC2_HOST }}:8080"  # Updated port
+          echo "🔗 URL: http://${{ secrets.EC2_HOST }}:8080"
