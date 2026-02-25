@@ -1,0 +1,172 @@
+name: Deploy Portfolio to EC2
+
+on:
+  push:
+    branches: [ main ]
+
+env:
+  APP_NAME: awale-portfolio
+  DEPLOY_PATH: /var/www/ci-cd
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            echo "🚀 Starting deployment..."
+
+            # --------------------------------------------------
+            # Ensure deployment directory exists
+            # --------------------------------------------------
+            if [ ! -d "${{ env.DEPLOY_PATH }}" ]; then
+              echo "📁 Creating deployment directory..."
+              sudo mkdir -p "${{ env.DEPLOY_PATH }}"
+              sudo chown -R ubuntu:ubuntu "${{ env.DEPLOY_PATH }}"
+            fi
+
+            cd "${{ env.DEPLOY_PATH }}"
+
+            # --------------------------------------------------
+            # Clone or update repository
+            # --------------------------------------------------
+            if [ ! -d ".git" ]; then
+              echo "📦 Cloning repository..."
+              git clone "https://github.com/${{ github.repository }}.git" .
+            else
+              echo "📥 Pulling latest changes..."
+              git pull origin main
+            fi
+
+            # --------------------------------------------------
+            # Create Dockerfile if missing
+            # --------------------------------------------------
+            if [ ! -f "Dockerfile" ]; then
+              echo "📝 Creating Dockerfile..."
+              cat > Dockerfile << 'EOF'
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY . .
+
+EXPOSE 8080
+
+CMD ["node", "app.js"]
+EOF
+            fi
+
+            # --------------------------------------------------
+            # Ensure Docker is installed
+            # --------------------------------------------------
+            if ! command -v docker >/dev/null 2>&1; then
+              echo "🐳 Installing Docker..."
+              sudo apt-get update
+              sudo apt-get install -y docker.io
+              sudo systemctl start docker
+              sudo systemctl enable docker
+              sudo usermod -aG docker ubuntu
+              newgrp docker
+            fi
+
+            # --------------------------------------------------
+            # Stop and remove existing container
+            # --------------------------------------------------
+            echo "🛑 Stopping old container..."
+            docker stop "${{ env.APP_NAME }}" 2>/dev/null || true
+            docker rm "${{ env.APP_NAME }}" 2>/dev/null || true
+
+            # --------------------------------------------------
+            # Build Docker image
+            # --------------------------------------------------
+            echo "🏗️ Building Docker image..."
+            docker build -t "${{ env.APP_NAME }}" .
+
+            # --------------------------------------------------
+            # Run new container
+            # --------------------------------------------------
+            echo "▶️ Starting new container..."
+            docker run -d \
+              --name "${{ env.APP_NAME }}" \
+              -p 8080:8080 \
+              --restart always \
+              "${{ env.APP_NAME }}"
+
+            sleep 5
+
+            # --------------------------------------------------
+            # Verify container is running
+            # --------------------------------------------------
+            if [ "$(docker ps -q -f name=${{ env.APP_NAME }})" ]; then
+              echo "✅ Container is running"
+            else
+              echo "❌ Container failed to start"
+              docker logs "${{ env.APP_NAME }}"
+              exit 1
+            fi
+
+            # --------------------------------------------------
+            # Health check
+            # --------------------------------------------------
+            echo "🏥 Running health check..."
+            sleep 8
+
+            HEALTHY=false
+            for i in {1..3}; do
+              if curl -f http://localhost:8080 >/dev/null 2>&1; then
+                echo "✅ Health check passed (attempt $i)"
+                HEALTHY=true
+                break
+              else
+                echo "⚠️ Health check failed (attempt $i), retrying..."
+                sleep 3
+              fi
+            done
+
+            if [ "$HEALTHY" != "true" ]; then
+              echo "❌ Health check failed!"
+              echo "📋 Last 50 lines of logs:"
+              docker logs "${{ env.APP_NAME }}" --tail 50
+              exit 1
+            fi
+
+            # --------------------------------------------------
+            # Clean up unused images
+            # --------------------------------------------------
+            echo "🧹 Cleaning up old images..."
+            docker image prune -f
+
+            echo "✅ Deployment completed successfully!"
+            echo "🌐 Application running at: http://${{ secrets.EC2_HOST }}:8080"
+
+      - name: Deployment Success
+        if: success()
+        run: |
+          echo "🎉 =================================="
+          echo "✅ DEPLOYMENT SUCCESSFUL!"
+          echo "📦 App: ${{ env.APP_NAME }}"
+          echo "📍 Path: ${{ env.DEPLOY_PATH }}"
+          echo "🌐 URL: http://${{ secrets.EC2_HOST }}:8080"
+          echo "🎉 =================================="
+
+      - name: Deployment Failed
+        if: failure()
+        run: |
+          echo "❌ =================================="
+          echo "❌ DEPLOYMENT FAILED!"
+          echo "Please check the logs above for errors."
+          echo "❌ =================================="
+          exit 1
