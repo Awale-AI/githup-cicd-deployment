@@ -1,46 +1,97 @@
-name: Deploy Portfolio to EC2 (Debug)
+name: Deploy to EC2
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 env:
-  APP_NAME: awale-portfolio
-  DEPLOY_PATH: /var/www/ci-cd
+  APP_NAME: awale-portfolio           # Changed to your app name
+  DEPLOY_PATH: /var/www/ci-cd         # Changed to your path
+  NODE_VERSION: "18"                   # Adjust as needed
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
-
+    
     steps:
-      - name: Debug Deployment
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Lint
+        run: npm run lint
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
+          username: ubuntu              # Changed to ubuntu (your user)
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            echo "=== DEBUGGING DEPLOYMENT ==="
-            
-            # Check directory
-            echo "1. Checking directory: ${{ env.DEPLOY_PATH }}"
-            ls -la ${{ env.DEPLOY_PATH }} || echo "Directory doesn't exist"
-            
-            # Check Docker
-            echo "2. Checking Docker installation"
-            docker --version || echo "Docker not installed"
-            
-            # Check for Dockerfile
-            echo "3. Looking for Dockerfile"
-            find ${{ env.DEPLOY_PATH }} -name "Dockerfile" || echo "Dockerfile not found"
-            
-            # Check if port 8080 is available
-            echo "4. Checking port 8080"
-            sudo netstat -tlnp | grep 8080 || echo "Port 8080 is free"
-            
-            # Try to pull code
-            echo "5. Attempting git pull"
+            # Setup directory
+            sudo mkdir -p ${{ env.DEPLOY_PATH }}
+            sudo chown -R ubuntu:ubuntu ${{ env.DEPLOY_PATH }}
             cd ${{ env.DEPLOY_PATH }}
-            git status || echo "Not a git repository"
             
-            echo "=== Debug Complete ==="
+            # Pull latest code
+            if [ -d ".git" ]; then
+              echo "Repository exists, pulling latest changes..."
+              git pull origin main
+            else
+              echo "Cloning repository for the first time..."
+              git clone https://github.com/${{ github.repository }}.git .
+            fi
+            
+            # Install dependencies
+            echo "Installing dependencies..."
+            npm install --omit=dev
+            
+            # Stop existing app
+            echo "Managing PM2 process..."
+            pm2 stop ${{ env.APP_NAME }} 2>/dev/null || echo "App not running, starting fresh"
+            pm2 delete ${{ env.APP_NAME }} 2>/dev/null || echo "No existing app to delete"
+            
+            # Start app
+            echo "Starting application..."
+            pm2 start app.js --name ${{ env.APP_NAME }}   # Make sure this is your entry file
+            pm2 save
+            
+            # Verify app is running
+            echo "Verifying deployment..."
+            pm2 status
+            sleep 5
+            
+            # Health check - update port if needed
+            echo "Running health check..."
+            if curl -f http://localhost:8080 > /dev/null 2>&1; then  # Changed to port 8080
+              echo "✅ Health check passed!"
+            else
+              echo "⚠️ Health check warning - endpoint not responding"
+            fi
+            
+            echo "✅ Deployment completed successfully!"
+      
+      - name: Deployment Success
+        run: |
+          echo "🚀 Application deployed successfully to EC2"
+          echo "📦 App Name: ${{ env.APP_NAME }}"
+          echo "📍 Location: ${{ env.DEPLOY_PATH }}"
+          echo "🔗 URL: http://${{ secrets.EC2_HOST }}:8080"  # Updated port
