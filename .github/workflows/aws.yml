@@ -39,41 +39,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy to EC2 via SSH
+      - uses: actions/checkout@v4
+
+      - name: Deploy to EC2
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
+
+            mkdir -p ${{ env.DEPLOY_PATH }}
             cd ${{ env.DEPLOY_PATH }}
 
-            echo "Pulling latest code..."
-            git pull origin main
+            if [ ! -d ".git" ]; then
+              git clone https://github.com/${{ github.repository }}.git .
+            else
+              git pull origin main
+            fi
 
-            echo "Stopping old container..."
             docker stop ${{ env.APP_NAME }} || true
             docker rm ${{ env.APP_NAME }} || true
 
-            echo "Building new image..."
             docker build -t ${{ env.APP_NAME }} .
-
-            echo "Starting new container..."
             docker run -d \
               --name ${{ env.APP_NAME }} \
               -p 8080:8080 \
               --restart always \
               ${{ env.APP_NAME }}
 
-            echo "Running health check..."
-            sleep 8
-            if curl -f http://localhost:8080 > /dev/null 2>&1; then
-              echo "✅ Deployment successful!"
-            else
-              echo "❌ Deployment failed!"
-              docker logs ${{ env.APP_NAME }}
-              exit 1
-            fi
-
-      - name: Deployment Success
-        run: echo "🚀 Portfolio deployed successfully to port 8080"
+            curl -f http://localhost:8080
